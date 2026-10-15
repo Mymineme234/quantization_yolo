@@ -10,14 +10,19 @@ import cv2
 import numpy as np
 
 from raw_head_postprocess import image_paths
-from raw_litert_runner import detect_image, draw_detections, read_verified_model, rgb_image
+from raw_litert_runner import detect_image as qat_detect, draw_detections as qat_draw, read_verified_model as qat_read, rgb_image as qat_rgb
+from ptq_dataset_common import read_split_images, select_images
+from raw_head_postprocess import read_metadata
+from ptq_raw_head_postprocess import read_verified_ptq_model as ptq_read
 
 
 def main():
     p = argparse.ArgumentParser(description='Raw-head INT8 LiteRT sanity visualization')
     p.add_argument('--prepared-dir', type=Path, required=True)
-    p.add_argument('--manifest', type=Path, required=True)
-    p.add_argument('--dataset-root', type=Path, required=True)
+    p.add_argument('--manifest', type=Path, help='Original COCO/custom manifest mode')
+    p.add_argument('--dataset-root', type=Path)
+    p.add_argument('--data', type=Path, help='Ultralytics data.yaml (new, supports COCO-style dataset splits too)')
+    p.add_argument('--split', choices=('train', 'val', 'test'), default='test')
     p.add_argument('--num-images', type=int, default=5)
     p.add_argument('--conf', type=float, default=.25)
     p.add_argument('--iou', type=float, default=.45)
@@ -32,8 +37,21 @@ def main():
     try:
         if args.num_images <= 0:
             raise ValueError('--num-images must be positive')
-        meta, model, interpreter = read_verified_model(args.prepared_dir, threads=args.threads)
-        paths = image_paths(args.manifest, args.dataset_root, args.num_images)
+        if bool(args.data) == bool(args.manifest):
+            raise ValueError('Supply exactly one of --data or --manifest')
+        if args.data:
+            all_images, _, _ = read_split_images(args.data, args.split)
+            paths = select_images(all_images, args.num_images)
+        else:
+            if args.dataset_root is None:
+                raise ValueError('--dataset-root is required with --manifest')
+            paths = image_paths(args.manifest, args.dataset_root, args.num_images)
+        method = read_metadata(args.prepared_dir).get('quantization_method', 'qat')
+        if method not in ('qat', 'ptq'):
+            raise RuntimeError(f'Unknown quantization method: {method}')
+        read_model = ptq_read if method == 'ptq' else qat_read
+        meta, model, interpreter = read_model(args.prepared_dir, threads=args.threads)
+        detect_image, draw_detections, rgb_image = qat_detect, qat_draw, qat_rgb
         if len(paths) != args.num_images:
             raise RuntimeError(f'Expected {args.num_images} images; manifest has {len(paths)}')
         rows = []

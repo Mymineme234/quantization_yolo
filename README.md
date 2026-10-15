@@ -1,8 +1,8 @@
-# YOLO Quantization-Aware Training → Raw-Head ONNX → LiteRT INT8
+# YOLO QAT & PTQ → Raw-Head ONNX → LiteRT Full INT8
 
 > **Installation guide, end-to-end usage instructions, validation workflow, and source-code reference**  
-> Scope: **object detection** with **YOLOv8, YOLO11, and YOLO26** (Ultralytics).  
-> This guide is based on the **20 Python files included in this project**. It does not claim that end-to-end training or conversion has been successfully tested on any specific machine.
+> Scope: **object detection** with **YOLOv8, YOLO11, and YOLO26** (Ultralytics); independent QAT and PTQ workflows.  
+> This guide describes the existing QAT scripts together with the new isolated PTQ tools and shared evaluation CLI. It does not claim that end-to-end training or conversion has been successfully tested on any specific machine.
 
 ## Table of Contents
 
@@ -18,12 +18,13 @@
 10. [Troubleshooting](#10-troubleshooting)
 11. [Reproducibility and Git Best Practices](#11-reproducibility-and-git-best-practices)
 12. [Current Limitations and References](#12-current-limitations-and-references)
+13. [Independent Static PTQ Workflow](#13-independent-static-ptq-workflow)
 
 ---
 
 ## 1. Introduction and Supported Scope
 
-This repository provides a **Quantization-Aware Training (QAT)** pipeline for selected YOLO object-detection architectures. After QAT, it exports the model's **raw detection head** to ONNX, converts it into a **full-integer INT8 LiteRT/TFLite** model, inspects the quantized graph, performs visual inference checks, and evaluates detection performance using COCOeval.
+This repository contains the established **Quantization-Aware Training (QAT)** pipeline and an **independent static Post-Training Quantization (PTQ)** pipeline for selected YOLO object-detection architectures. After QAT, it exports the model's **raw detection head** to ONNX, converts it into a **full-integer INT8 LiteRT/TFLite** model, inspects the quantized graph, performs visual inference checks, and evaluates detection performance using COCOeval.
 
 The main technologies are:
 
@@ -115,7 +116,7 @@ yolo-qat-litert/
 ├── 07_convert_raw_litert_int8.py
 ├── 08_audit_raw_litert.py
 ├── 09a_sanity_raw_litert.py
-├── 09b_benchmark_raw_litert_coco.py
+├── 09b_benchmark_raw_litert.py  # COCO + YOLO data.yaml, QAT + PTQ
 ├── qat_prepare_common.py
 ├── qat_stage_common.py
 ├── qat_export_common.py
@@ -126,20 +127,7 @@ yolo-qat-litert/
 └── runs/                   # Generated logs, checkpoints, ONNX, TFLite, metrics
 ```
 
-All filenames in this tree have been **normalized**. Some original attachments were downloaded with `(1)` or `(2)` suffixes because of duplicate filenames. **Rename them before running the pipeline**, especially:
-
-| Original downloaded name | Required repository filename |
-|---|---|
-| `00_environment_audit(1).py` | `00_environment_audit.py` |
-| `01_inspect_model(1).py` | `01_inspect_model.py` |
-| `02a_prepare_qat_yolov8(1).py` | `02a_prepare_qat_yolov8.py` |
-| `02b_prepare_qat_yolo11(1).py` | `02b_prepare_qat_yolo11.py` |
-| `02c_prepare_qat_yolo26(1).py` | `02c_prepare_qat_yolo26.py` |
-| `03_calibrate_activations(2).py` | `03_calibrate_activations.py` |
-| `09b_benchmark_raw_litert_coco(2).py` | `09b_benchmark_raw_litert_coco.py` |
-| `qat_prepare_common(1).py` | `qat_prepare_common.py` |
-
-**Why this matters:** the scripts use imports such as `from qat_prepare_common import ...`. Python will **not** treat `qat_prepare_common(1).py` as the `qat_prepare_common` module. Failing to rename it can cause `ModuleNotFoundError` in Steps 02–06.
+**File naming:** the source filenames in this repository are canonical. Keep the existing QAT filenames unchanged; do not add or remove upload-related suffixes.
 
 ### 3.2. Why all scripts and helpers share one directory
 
@@ -164,7 +152,7 @@ The current layout is **not an installed Python package with `__init__.py`**. Al
 - Install Python, `pip`, `venv`, and optionally Git.
 - **Two separate Python virtual environments are recommended** because PyTorch/ModelOpt and TensorFlow/onnx2tf may have conflicting dependencies.
 
-> **Versioning note:** the 20 supplied source files do **not** include a `requirements.txt`, dependency lockfile, or verified version-compatibility matrix. The commands below are **initial installation examples inferred from imports and package documentation**—not proof that arbitrary latest versions work together. Once the pipeline works, capture the exact versions using `pip freeze`.
+> **Versioning note:** the uploaded repository did **not** include a `requirements.txt`, dependency lockfile, or verified version-compatibility matrix. The commands below are **initial installation examples inferred from imports and package documentation**—not proof that arbitrary latest versions work together. Once the pipeline works, capture the exact versions using `pip freeze`.
 
 ### 4.2. Dependencies by stage
 
@@ -372,7 +360,7 @@ Example for a two-class checkpoint when annotations use category IDs 3 and 7:
 ---
 ## 6. Running the Complete Pipeline
 
-All commands assume execution from the **repository root** and normalized script filenames. Example paths:
+All commands assume execution from the **repository root** with the filenames already present in the repository. Example paths:
 
 ```text
 MODEL=models/yolov8n.pt
@@ -653,7 +641,7 @@ python 09a_sanity_raw_litert.py \
 ### Step 09b — COCOeval benchmark
 
 ```bash
-python 09b_benchmark_raw_litert_coco.py \
+python 09b_benchmark_raw_litert.py \
   --prepared-dir runs/qat/yolov8n \
   --manifest datasets/manifests/val_subset.txt \
   --dataset-root . \
@@ -882,7 +870,7 @@ LiteRT may expose a transposed/NHWC tensor layout; the runner inspects shapes an
 - **Artifacts:** `09a_sanity_images/*.jpg` and `sanity_report.json`.
 - **Limitation:** `FUNCTIONAL_PASS` requires only one or more detections; it does not guarantee correct class labels or bounding boxes.
 
-### 7.20. `09b_benchmark_raw_litert_coco.py` — COCO mAP and latency evaluation
+### 7.20. `09b_benchmark_raw_litert.py` — COCO/custom precision, recall, F1, mAP, latency
 
 - **Main functions:** `category_map()`, `manifest_to_coco_ids()`, `parse_args()`, `main()`.
 - **Depends on:** `pycocotools.COCO`, `COCOeval`, `raw_litert_runner.py`, and the image manifest helper.
@@ -985,7 +973,7 @@ Before describing the final model as **deployment-ready**, review at least **Ste
 
 | Symptom | Likely cause | Recommended action |
 |---|---|---|
-| `ModuleNotFoundError: qat_prepare_common` | Helper still has `(1)` suffix or is in the wrong folder | Rename to `qat_prepare_common.py` and keep it alongside entry points |
+| `ModuleNotFoundError: qat_prepare_common` | Missing helper or wrong working directory | Keep `qat_prepare_common.py` in `pipeline/` alongside the entry points |
 | `No module named modelopt` | Wrong virtual environment or missing `nvidia-modelopt` | Activate `.venv-qat` and test the import |
 | `CUDA unavailable` / preflight `FAIL` | Incompatible CUDA build, driver, GPU, or device selection | Use the PyTorch installer selector, check `torch.cuda.is_available()`, rerun Step 00 |
 | `INT8_DEFAULT_CFG.quant_cfg must be a list` | ModelOpt release differs from the API expected by the source | Pin a compatible ModelOpt version or update the adapter after examining the actual API |
@@ -1020,7 +1008,7 @@ python 03_calibrate_activations.py --help
 python 05_train_qat.py --help
 python 06a_export_raw_yolov8.py --help
 python 07_convert_raw_litert_int8.py --help
-python 09b_benchmark_raw_litert_coco.py --help
+python 09b_benchmark_raw_litert.py --help
 ```
 
 `compileall` validates Python syntax only. It **does not** guarantee that imports, dependencies, or runtime behavior will work. Run one stage at a time and inspect the JSON status before moving forward.
@@ -1070,8 +1058,8 @@ Commit **source code, README files, reproducibility configurations, and verified
 
 ### 11.3. Checklist before publishing
 
-- [ ] Original `(1)`/`(2)` filename suffixes have been removed.
-- [ ] All **20 Python files** exist in the documented layout, including `qat_prepare_common.py` alongside the entry-point scripts.
+- [ ] Canonical pipeline filenames and helper imports are consistent.
+- [ ] All original QAT source files and the added PTQ source files exist, including `qat_prepare_common.py` alongside the entry-point scripts.
 - [ ] Python syntax and relevant `--help` entry points have been checked in the applicable environments.
 - [ ] Tested dependency versions have been recorded in lockfiles.
 - [ ] The README documents all three families without mixing artifacts between runs.
@@ -1092,7 +1080,7 @@ Commit **source code, README files, reproducibility configurations, and verified
 6. Step 09a checks only for nonempty detection results; Step 09b is a COCO-format evaluation, not a generic evaluation tool for every dataset format.
 7. Step 09 latency includes only **`Interpreter.invoke()`**, excluding preprocessing and host postprocessing.
 8. The code does not include direct deployment or serving integrations for Android, ESP32, Jetson, Raspberry Pi, Edge TPU, other NPUs, or MCUs.
-9. The 20 supplied files did not include dependency lockfiles or a report of end-to-end successful tests. **Do not claim guaranteed reproducibility until a fully pinned environment has been tested.**
+9. The uploaded repository did not include pinned dependency lockfiles for both environments. **Do not claim guaranteed reproducibility until a fully pinned environment has been tested.**
 
 ### 12.2. Official dependency references
 
@@ -1107,3 +1095,130 @@ Commit **source code, README files, reproducibility configurations, and verified
 **Recommended workflow:** begin at Step 00, execute the stages in order using the correct family, keep the same `prepared-dir`, inspect every stage's status JSON, switch to the converter environment at Step 07, and treat the exported LiteRT model as a deployment candidate only after **structural auditing, functional sanity checking, and accuracy evaluation** against your application's requirements.
 # quantization_yolo
 # quantization_yolo
+
+
+---
+
+## 13. Independent Static PTQ Workflow
+
+The original QAT Steps **00–08 and all original QAT helper files are unchanged**. PTQ runs under `runs/ptq/...` with **different** converter/audit report filenames and cannot overwrite a QAT run. Both workflows use the same raw-head output contract. Steps 09A/09B select the correct QAT/PTQ **model validator**, then use the original unchanged `raw_litert_runner.py` for both methods' inference and visualization.
+
+### 13.1 PTQ theory and calibration
+
+Static **post-training quantization (PTQ)** does **not** insert training-time fake-quantizer Q/DQ nodes and does **not** retrain weights. It **does** calibrate **activation** ranges from representative real images during conversion. We export an FP32 raw-head ONNX from the original pretrained `.pt` first, then onnx2tf runs representative-data calibration and converts the graph to INT8.
+
+- FP32 weights remain fixed; PTQ estimates activation ranges and quantizes activations/weights using onnx2tf.
+- Input/output are expected to be INT8; INT32 bias/accumulation is permitted. Audit explicitly refuses FLOAT32 runtime and DEQUANTIZE.
+- Both raw-head outputs (`reg_logits`, `cls_logits`) are separately quantized, and DFL/sigmoid/anchors/NMS are performed **outside** LiteRT on the host.
+- The method for QAT already in this repo is **QAT-trained weights -> FP32 raw-head export -> conversion-time calibration**. PTQ instead uses **original pretrained weights**. Both can use the same train calibration subset and test benchmark.
+
+### 13.2 PTQ-only and revised evaluation files
+
+| Filename | Purpose |
+|---|---|
+| `06d_export_raw_ptq.py` | PTQ entry point for YOLOv8/YOLO11/YOLO26; no training |
+| `ptq_export_common.py` | Self-contained family identification and raw-head export verification |
+| `ptq_raw_head_postprocess.py` | PTQ-only raw-head decode/inference helpers |
+| `ptq_dataset_common.py` | Read `data.yaml`, split lists, YOLO labels and disk-backed calibration NPY |
+| `07b_ptq_convert_raw_litert_int8.py` | Static PTQ conversion via onnx2tf, using representative images |
+| `08b_ptq_audit_raw_litert.py` | Independent PTQ integer-only audit |
+| `evaluation_common.py` | QAT/PTQ shared COCO + YOLO-label Precision/Recall/F1/mAP metrics |
+| `09a_sanity_raw_litert.py` | **Updated**, backwards-compatible COCO manifest or `--data` |
+| `09b_benchmark_raw_litert.py` | **Updated**, backwards-compatible COCO JSON or YOLO `.txt` from `--data` |
+
+`09b_benchmark_raw_litert.py` is the single benchmark for both COCO and YOLO-label datasets. The previous filename ending in `_coco.py` has been renamed; the original COCO CLI flags still work. No Step 10 is required.
+
+### 13.3 Example data.yaml
+
+```yaml
+path: /home/tienc/qat_yolo_pipeline/datasets/my_dataset
+train: images/train
+val: images/valid
+test: images/test
+nc: 3
+names: [person, pet, vehicle]
+```
+
+`data.yaml` is interpreted using paths relative to `path`, or relative to the YAML location when `path` is omitted. Label files are expected in mirrored `labels/train`, `labels/valid`, and `labels/test` directories. The label parser implements **YOLO axis-aligned detection** (`class cx cy w h` normalized). It does not silently accept segmentation or pose labels.
+
+Calibration uses **train only**. Step 09 defaults to **test** for `--data`. Do not use test images for calibration. When no `--num-images` is provided in data.yaml benchmark mode, every image in that split is evaluated.
+
+### 13.4 Commands: independent PTQ with 3,000 training images
+
+Run from project root `~/qat_yolo_pipeline`. The following commands show YOLO11n (or a structurally compatible pruned YOLO11n). Use separate `runs/ptq` folders for each experiment.
+
+**Export FP32 raw-head ONNX** (`.venv` with torch, ultralytics, onnx, onnxruntime):
+
+```bash
+source .venv/bin/activate
+python pipeline/06d_export_raw_ptq.py \
+  --model model/input/yolo11n.pt \
+  --output runs/ptq/yolo11n \
+  --family yolo11 \
+  --imgsz 640 640 \
+  --device cpu
+```
+
+For YOLOv8 use `--family yolov8`, for YOLO26 `--family yolo26 --head-branch one2many`. `--family auto` attempts architectural detection; if pruning makes family detection ambiguous, specify it explicitly. Step 06D writes `06_raw_head.onnx`, `06_raw_head_metadata.json`, and numerical-verification JSON. **Export is FAIL** if raw heads do not agree with PyTorch original branch and ONNX runtime within configured tolerances.
+
+**Static calibration and full integer conversion** (`.venv-convert` with onnx2tf, tensorflow, cv2, numpy, yaml):
+
+```bash
+deactivate 2>/dev/null || true
+source .venv-convert/bin/activate
+python pipeline/07b_ptq_convert_raw_litert_int8.py \
+  --prepared-dir runs/ptq/yolo11n \
+  --data datasets/my_dataset/data.yaml \
+  --calib-samples 3000 \
+  --seed 42
+```
+
+This creates deterministic calibration list `07b_calibration_images.txt` plus a **disk-backed** `[3000,640,640,3]` float32 NPY, then runs the tested `onnx2tf -tb tf_converter -oiqt -iqd int8 -oqd int8 -cind images ...` recipe. The NPY file at 640² takes approximately **13.73 GiB** on disk; onnx2tf may require additional RAM to ingest it. Use `--calib-samples 256` or `512` first for smoke tests or when RAM is limited, then increase and benchmark mAP. More images do **not** mathematically guarantee higher mAP. You may also use `--calib-npy` with a pre-existing NHWC normalized float32 array, or `--calib-manifest` plus `--dataset-root` for a fixed subset. Passing `--force` replaces **only the PTQ conversion subdirectory**.
+
+**Integer-only audit** (`.venv-convert`):
+
+```bash
+python pipeline/08b_ptq_audit_raw_litert.py --prepared-dir runs/ptq/yolo11n
+```
+
+Only `STRUCTURAL_PASS` confirms the integer-only property. A successful converter exit code alone does not prove runtime integer-only. Inspect INT8 I/O and ensure no DEQUANTIZE/FLOAT32 islands remain. Delegates/device-specific acceleration still need on-device testing.
+
+**Sanity and benchmark** (`.venv-convert`, same commands for QAT and PTQ):
+
+```bash
+python pipeline/09a_sanity_raw_litert.py \
+  --prepared-dir runs/ptq/yolo11n \
+  --data datasets/my_dataset/data.yaml --split test --num-images 5
+
+python pipeline/09b_benchmark_raw_litert.py \
+  --prepared-dir runs/ptq/yolo11n \
+  --data datasets/my_dataset/data.yaml --split test \
+  --conf 0.001 --iou 0.7 --max-det 300 \
+  --pr-conf 0.25 --match-iou 0.50
+```
+
+The same `--data` commands work unchanged for the QAT directory `runs/qat/yolo11n`; existing `--manifest ... --dataset-root ... --annotations ...` COCO commands still work. **Native COCO JSON with a different label mapping** must supply `--class-map` where necessary. If the dataset has YOLO `.txt` labels (even for COCO images), `--data ... --split test` can evaluate them directly instead of requiring an annotations JSON.
+
+### 13.5 Metric definitions and acceptance
+
+Step 09B reports Precision, Recall, F1 at **fixed** `--pr-conf 0.25` and class-aware IoU assignment `--match-iou 0.50`, with micro-average as its headline. In contrast, mAP50 and mAP50-95 use full COCOeval precision-recall integration over predictions retained at `--conf 0.001`. The `--iou` argument controls NMS, **not** GT matching. Per-class P/R/F1 and AP, model size, inference latency mean/P50/P95 and exported prediction JSON are also provided. Fixed-threshold P/R/F1 do not reproduce Ultralytics' optimal-F1 confidence metrics, nor do they fully reflect COCO crowd-ignore policy; COCO mAP is authoritative for native COCO comparisons.
+
+Outputs are placed in the experiment's own `prepared-dir`. The last statuses are distinct: `CONVERSION_PASS` (artifact created), `STRUCTURAL_PASS` (integer graph audited), `FUNCTIONAL_PASS` (real-image inference), `EVALUATION_PASS` (benchmark computed), and optional `ACCURACY_PASS` if both mAP gates are provided and met. Do not treat conversion or sanity as proof of mAP.
+
+### 13.6 Fail-closed compatibility and limitations
+
+All existing QAT scripts through Step 08 and shared QAT helpers are **byte-for-byte unchanged**. Only Step 09A/09B were modified. They verify PTQ models through `ptq_raw_head_postprocess.read_verified_ptq_model` and QAT models through the original `raw_litert_runner.read_verified_model`; both use the original runner's **identical inference/decoding/drawing**. PTQ `08b` cannot read QAT metadata; PTQ `07b` cannot run on QAT runs. Output layout and metadata schema remain compatible with original raw-head decoding.
+
+YOLO26 supports one-to-many (NMS) by default, or one-to-one (`--head-branch one2one`) with top-k. Detection head semantics, `reg_max`, number of classes, strides, and ONNX equivalence are validated, never inferred solely from model filename. Integration/accuracy/latency must be measured on the actual Ultralytics+ModelOpt+onnx2tf/LiteRT stack before production use.
+
+
+### Migrating from the first PTQ patch
+
+After extracting this patch, delete the **obsolete** duplicates (not needed by the current pipeline):
+
+```bash
+rm -f pipeline/ptq_litert_runner.py pipeline/ptq_evaluation_common.py \
+      pipeline/09b_benchmark_raw_litert_coco.py
+```
+
+Keep `pipeline/ptq_raw_head_postprocess.py`: the PTQ exporter and converter still use it, and it now verifies PTQ conversion/audit hashes. **No QAT Step 00–08 file or original QAT helper is modified.**
